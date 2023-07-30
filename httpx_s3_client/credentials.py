@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Tuple, Union
 
-import aiohttp
 from aws_request_signer import AwsRequestSigner
-from yarl import URL
+from httpx import URL, AsyncClient
 
 
 try:
@@ -78,7 +77,7 @@ class URLCredentials(StaticCredentials):
     ):
         url = URL(url)
         super().__init__(
-            access_key_id=url.user or "",
+            access_key_id=url.username or "",
             secret_access_key=url.password or "",
             region=region, service=service,
         )
@@ -240,10 +239,10 @@ class MetadataCredentials(AbstractCredentials):
         return self.is_started.is_set()
 
     def __init__(self, *, service: str = "s3"):
-        self.session = aiohttp.ClientSession(
-            base_url=URL.build(
+        self.session = AsyncClient(
+            base_url=URL(
                 scheme="http",
-                host=self.METADATA_ADDRESS,
+                host=str(self.METADATA_ADDRESS).rstrip('/'),
                 port=self.METADATA_PORT,
             ),
             headers={},
@@ -275,29 +274,19 @@ class MetadataCredentials(AbstractCredentials):
     async def stop(self, *_: Any) -> None:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
-        await self.session.close()
+        await self.session.aclose()
 
     async def _fetch_credentials(
         self,
     ) -> Tuple[StaticCredentials, datetime.datetime]:
-        async with self.session.get(
-            "/latest/dynamic/instance-identity/document",
-        ) as response:
-            document: MetadataDocument = await response.json(
-                content_type=None, encoding="utf-8",
-            )
+        response = await self.session.get("/latest/dynamic/instance-identity/document")
+        document: MetadataDocument = response.json()
 
-        async with self.session.get(
-            "/latest/meta-data/iam/security-credentials/",
-        ) as response:
-            iam_role = await response.text(encoding="utf-8")
+        response = await self.session.get("/latest/meta-data/iam/security-credentials/")
+        iam_role = response.content.decode()
 
-        async with self.session.get(
-            f"/latest/meta-data/iam/security-credentials/{iam_role}",
-        ) as response:
-            credentials: MetadataSecurityCredentials = await response.json(
-                content_type=None, encoding="utf-8",
-            )
+        response = await self.session.get(f"/latest/meta-data/iam/security-credentials/{iam_role}")
+        credentials: MetadataSecurityCredentials = response.json()
 
         return (
             StaticCredentials(

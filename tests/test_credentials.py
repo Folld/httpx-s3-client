@@ -3,11 +3,11 @@ import os
 from unittest import mock
 
 import pytest
-from aiohttp import web
+from httpx import AsyncClient
 from pytest import FixtureRequest
-from pytest_aiohttp.plugin import TestServer
+from pytest_httpx import HTTPXMock
 
-from aiohttp_s3_client.credentials import (
+from httpx_s3_client.credentials import (
     AbstractCredentials, ConfigCredentials, EnvironmentCredentials,
     MetadataCredentials, StaticCredentials, URLCredentials, merge_credentials,
 )
@@ -95,173 +95,168 @@ def test_config_credentials(tmp_path):
 
 
 @pytest.fixture
-def metadata_server_app() -> web.Application:
-    app = web.Application()
+def metadata_server_app(httpx_mock: HTTPXMock):
+    class Mocker:
+        def __init__(self, _httpx_mock: HTTPXMock):
+            self._httpx_mock = _httpx_mock
+            self._base_url = 'http://localhost'
 
-    async def get_iam_role(request: web.Request) -> web.Response:
-        """
-        $ curl -v \
-            169.254.169.254/latest/meta-data/iam/security-credentials/myiamrole
-        *   Trying 169.254.169.254:80...
-        * Connected to 169.254.169.254 (169.254.169.254) port 80 (#0)
-        > GET /latest/meta-data/iam/security-credentials/myiamrole HTTP/1.1
-        > Host: 169.254.169.254
-        > User-Agent: curl/7.87.0
-        > Accept: */*
-        >
-        * Mark bundle as not supporting multiuse
-        < HTTP/1.1 200 OK
-        < Content-Type: text/plain
-        < Accept-Ranges: none
-        < Last-Modified: Fri, 30 Jun 2023 19:06:40 GMT
-        < Content-Length: 1582
-        < Date: Fri, 30 Jun 2023 20:00:47 GMT
-        < Server: EC2ws
-        < Connection: close
-        <
-        {
-          "Code" : "Success",
-          "LastUpdated" : "2023-06-30T19:06:42Z",
-          "Type" : "AWS-HMAC",
-          "AccessKeyId" : "ANOTATOKEN5345W4RX",
-          "SecretAccessKey" : "VGJvJ5H34NOTATOKENAJikpQN/Riq",
-          "Token" : "INOTATOKENQoJb3JpZ2luX2V...SzrAFy",
-          "Expiration" : "2023-07-01T01:25:35Z"
-        }
+        def set_base_url(self, base_url: str):
+            self._base_url = base_url.rstrip('/')
 
-        """
-        last_updated = datetime.datetime.utcnow()
-
-        if request.match_info["role"] != "pytest":
-            raise web.HTTPNotFound()
-
-        return web.json_response(
+        def mock_get_iam_role(self):
+            """
+            $ curl -v \
+                169.254.169.254/latest/meta-data/iam/security-credentials/myiamrole
+            *   Trying 169.254.169.254:80...
+            * Connected to 169.254.169.254 (169.254.169.254) port 80 (#0)
+            > GET /latest/meta-data/iam/security-credentials/myiamrole HTTP/1.1
+            > Host: 169.254.169.254
+            > User-Agent: curl/7.87.0
+            > Accept: */*
+            >
+            * Mark bundle as not supporting multiuse
+            < HTTP/1.1 200 OK
+            < Content-Type: text/plain
+            < Accept-Ranges: none
+            < Last-Modified: Fri, 30 Jun 2023 19:06:40 GMT
+            < Content-Length: 1582
+            < Date: Fri, 30 Jun 2023 20:00:47 GMT
+            < Server: EC2ws
+            < Connection: close
+            <
             {
-                "Code": "Success",
-                "LastUpdated": last_updated.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "Type": "AWS-HMAC",
-                "AccessKeyId": "PYTESTACCESSKEYID",
-                "SecretAccessKey": "PYTESTACCESSKEYSECRET",
-                "Token": "PYTESTACCESSTOKEN",
-                "Expiration": (
-                    last_updated + datetime.timedelta(hours=2)
-                ).strftime(
-                    "%Y-%m-%dT%H:%M:%SZ",
-                ),
-            },
-            content_type="text/plain",
-        )
+              "Code" : "Success",
+              "LastUpdated" : "2023-06-30T19:06:42Z",
+              "Type" : "AWS-HMAC",
+              "AccessKeyId" : "ANOTATOKEN5345W4RX",
+              "SecretAccessKey" : "VGJvJ5H34NOTATOKENAJikpQN/Riq",
+              "Token" : "INOTATOKENQoJb3JpZ2luX2V...SzrAFy",
+              "Expiration" : "2023-07-01T01:25:35Z"
+            }
 
-    app.router.add_get(
-        "/latest/meta-data/iam/security-credentials/{role}",
-        get_iam_role,
-    )
+            """
+            last_updated = datetime.datetime.utcnow()
 
-    async def get_security_credentials(request: web.Request) -> web.Response:
-        """
-        GET /latest/meta-data/iam/security-credentials/ HTTP/1.1
-        > Host: 169.254.169.254
-        > User-Agent: curl/7.87.0
-        > Accept: */*
-        >
-        * Mark bundle as not supporting multiuse
-        < HTTP/1.1 200 OK
-        < Content-Type: text/plain
-        < Accept-Ranges: none
-        < Last-Modified: Fri, 30 Jun 2023 19:06:40 GMT
-        < Content-Length: 14
-        < Date: Fri, 30 Jun 2023 20:02:18 GMT
-        < Server: EC2ws
-        < Connection: close
-        <
-        pytest
-        """
-        return web.Response(body="pytest")
+            self._httpx_mock.add_response(
+                method='GET',
+                url=self._base_url + "/latest/meta-data/iam/security-credentials/pytest",
+                json={
+                    "Code": "Success",
+                    "LastUpdated": last_updated.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "Type": "AWS-HMAC",
+                    "AccessKeyId": "PYTESTACCESSKEYID",
+                    "SecretAccessKey": "PYTESTACCESSKEYSECRET",
+                    "Token": "PYTESTACCESSTOKEN",
+                    "Expiration": (
+                        last_updated + datetime.timedelta(hours=2)
+                    ).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                    ),
+                },
+            )
 
-    app.router.add_get(
-        "/latest/meta-data/iam/security-credentials/",
-        get_security_credentials,
-    )
+        def mock_get_security_credentials(self):
+            """
+            GET /latest/meta-data/iam/security-credentials/ HTTP/1.1
+            > Host: 169.254.169.254
+            > User-Agent: curl/7.87.0
+            > Accept: */*
+            >
+            * Mark bundle as not supporting multiuse
+            < HTTP/1.1 200 OK
+            < Content-Type: text/plain
+            < Accept-Ranges: none
+            < Last-Modified: Fri, 30 Jun 2023 19:06:40 GMT
+            < Content-Length: 14
+            < Date: Fri, 30 Jun 2023 20:02:18 GMT
+            < Server: EC2ws
+            < Connection: close
+            <
+            pytest
+            """
+            self._httpx_mock.add_response(
+                method="GET",
+                url=f"{self._base_url}/latest/meta-data/iam/security-credentials/",
+                content=b"pytest",
+            )
 
-    async def get_instance_identity(request: web.Request) -> web.Response:
-        """
-        $ curl-v \
-            http://169.254.169.254/latest/dynamic/instance-identity/document
-        *   Trying 169.254.169.254:80...
-        * Connected to 169.254.169.254 (169.254.169.254) port 80 (#0)
-        > GET /latest/dynamic/instance-identity/document HTTP/1.1
-        > Host: 169.254.169.254
-        > User-Agent: curl/7.87.0
-        > Accept: */*
-        >
-        * Mark bundle as not supporting multiuse
-        < HTTP/1.1 200 OK
-        < Content-Type: text/plain
-        < Accept-Ranges: none
-        < Last-Modified: Fri, 30 Jun 2023 19:06:40 GMT
-        < Content-Length: 478
-        < Date: Fri, 30 Jun 2023 20:03:14 GMT
-        < Server: EC2ws
-        < Connection: close
-        <
-        {
-          "accountId" : "123123",
-          "architecture" : "x86_64",
-          "availabilityZone" : "us-east-1a",
-          "billingProducts" : null,
-          "devpayProductCodes" : null,
-          "marketplaceProductCodes" : null,
-          "imageId" : "ami-123123",
-          "instanceId" : "i-11232323",
-          "instanceType" : "t3a.micro",
-          "kernelId" : null,
-          "pendingTime" : "2023-06-13T18:18:58Z",
-          "privateIp" : "172.33.33.33",
-          "ramdiskId" : null,
-          "region" : "us-east-1",
-          "version" : "2017-09-30"
-        }
-        """
-
-        return web.json_response(
+        def mock_get_instance_identity(self):
+            """
+            $ curl-v \
+                http://169.254.169.254/latest/dynamic/instance-identity/document
+            *   Trying 169.254.169.254:80...
+            * Connected to 169.254.169.254 (169.254.169.254) port 80 (#0)
+            > GET /latest/dynamic/instance-identity/document HTTP/1.1
+            > Host: 169.254.169.254
+            > User-Agent: curl/7.87.0
+            > Accept: */*
+            >
+            * Mark bundle as not supporting multiuse
+            < HTTP/1.1 200 OK
+            < Content-Type: text/plain
+            < Accept-Ranges: none
+            < Last-Modified: Fri, 30 Jun 2023 19:06:40 GMT
+            < Content-Length: 478
+            < Date: Fri, 30 Jun 2023 20:03:14 GMT
+            < Server: EC2ws
+            < Connection: close
+            <
             {
-                "accountId": "123123",
-                "architecture": "x86_64",
-                "availabilityZone": "us-east-1a",
-                "billingProducts": None,
-                "devpayProductCodes": None,
-                "marketplaceProductCodes": None,
-                "imageId": "ami-123123",
-                "instanceId": "i-11232323",
-                "instanceType": "t3a.micro",
-                "kernelId": None,
-                "pendingTime": "2023-06-13T18:18:58Z",
-                "privateIp": "172.33.33.33",
-                "ramdiskId": None,
-                "region": "us-east-99",
-                "version": "2017-09-30",
-            },
-            content_type="text/plain",
-        )
+              "accountId" : "123123",
+              "architecture" : "x86_64",
+              "availabilityZone" : "us-east-1a",
+              "billingProducts" : null,
+              "devpayProductCodes" : null,
+              "marketplaceProductCodes" : null,
+              "imageId" : "ami-123123",
+              "instanceId" : "i-11232323",
+              "instanceType" : "t3a.micro",
+              "kernelId" : null,
+              "pendingTime" : "2023-06-13T18:18:58Z",
+              "privateIp" : "172.33.33.33",
+              "ramdiskId" : null,
+              "region" : "us-east-1",
+              "version" : "2017-09-30"
+            }
+            """
 
-    app.router.add_get(
-        "/latest/dynamic/instance-identity/document",
-        get_instance_identity,
-    )
-
-    return app
+            self._httpx_mock.add_response(
+                method='GET',
+                url=f'{self._base_url}/latest/dynamic/instance-identity/document',
+                json={
+                    "accountId": "123123",
+                    "architecture": "x86_64",
+                    "availabilityZone": "us-east-1a",
+                    "billingProducts": None,
+                    "devpayProductCodes": None,
+                    "marketplaceProductCodes": None,
+                    "imageId": "ami-123123",
+                    "instanceId": "i-11232323",
+                    "instanceType": "t3a.micro",
+                    "kernelId": None,
+                    "pendingTime": "2023-06-13T18:18:58Z",
+                    "privateIp": "172.33.33.33",
+                    "ramdiskId": None,
+                    "region": "us-east-99",
+                    "version": "2017-09-30",
+                },
+            )
+    return Mocker(httpx_mock)
 
 
 async def test_metadata_credentials(
     request: FixtureRequest,
     metadata_server_app,
 ):
-    server = TestServer(metadata_server_app)
-    await server.start_server()
+    server = AsyncClient(base_url='http://localhost')
+    metadata_server_app.set_base_url(str(server.base_url))
+    metadata_server_app.mock_get_instance_identity()
+    metadata_server_app.mock_get_iam_role()
+    metadata_server_app.mock_get_security_credentials()
 
     class TestMetadataCredentials(MetadataCredentials):
-        METADATA_ADDRESS = server.host
-        METADATA_PORT = server.port
+        METADATA_ADDRESS = server.base_url.host
 
     credentials = TestMetadataCredentials()
     assert isinstance(credentials, AbstractCredentials)

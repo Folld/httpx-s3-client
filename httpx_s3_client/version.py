@@ -2,5 +2,5 @@
 # BY: poem-plugins "git" plugin
 # NEVER EDIT THIS FILE MANUALLY
 
-version_info = (0, 8, 16)
-__version__ = "0.8.16"
+version_info = (0, 0, 1)
+__version__ = "0.0.1"

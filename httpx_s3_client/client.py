@@ -6,6 +6,7 @@ import os
 import typing as t
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from functools import partial
 from http import HTTPStatus
 from itertools import chain
@@ -13,40 +14,39 @@ from mimetypes import guess_type
 from mmap import PAGESIZE
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from urllib.parse import quote
 
-from aiohttp import ClientSession, hdrs
-from aiohttp.client import _RequestContextManager as RequestContextManager
-from aiohttp.client_exceptions import ClientError
 from aiomisc import asyncbackoff, threaded, threaded_iterable
 from aws_request_signer import UNSIGNED_PAYLOAD
-from multidict import CIMultiDict, CIMultiDictProxy
-from yarl import URL
+from httpx import URL, HTTPError, AsyncClient, Response
 
-from aiohttp_s3_client.credentials import (
-    AbstractCredentials, collect_credentials,
-)
-from aiohttp_s3_client.xml import (
+from httpx_s3_client._xml import (
     AwsObjectMeta, create_complete_upload_request,
     parse_create_multipart_upload_id, parse_list_objects,
 )
-
+from httpx_s3_client.credentials import (
+    AbstractCredentials, collect_credentials,
+)
 
 log = logging.getLogger(__name__)
 
-
 CHUNK_SIZE = 2 ** 16
+
 DONE = object()
 EMPTY_STR_HASH = hashlib.sha256(b"").hexdigest()
-PART_SIZE = 5 * 1024 * 1024  # 5MB
+# 5MB
 
-HeadersType = t.Union[t.Dict, CIMultiDict, CIMultiDictProxy]
-
-
+PART_SIZE = 5 * 1024 * 1024
+HeadersType = t.Union[t.Dict]
 threaded_iterable_constrained = threaded_iterable(max_size=2)
 
 
-class AwsError(ClientError):
+@dataclass
+class HEADERS:
+    CONTENT_LENGTH = 'Content-Length'
+    CONTENT_TYPE = 'Content-Type'
+
+
+class AwsError(HTTPError):
     pass
 
 
@@ -60,7 +60,7 @@ class AwsDownloadError(AwsError):
 
 @threaded
 def concat_files(
-    target_file: Path, files: t.List[t.IO[bytes]], buffer_size: int,
+        target_file: Path, files: t.List[t.IO[bytes]], buffer_size: int,
 ) -> None:
     with target_file.open("ab") as fp:
         for file in files:
@@ -75,7 +75,7 @@ def concat_files(
 
 @threaded
 def write_from_start(
-    file: io.BytesIO, chunk: bytes, range_start: int, pos: int,
+        file: io.BytesIO, chunk: bytes, range_start: int, pos: int,
 ) -> None:
     file.seek(pos - range_start)
     file.write(chunk)
@@ -83,14 +83,14 @@ def write_from_start(
 
 @threaded
 def pwrite_absolute_pos(
-    fd: int, chunk: bytes, range_start: int, pos: int,
+        fd: int, chunk: bytes, range_start: int, pos: int,
 ) -> None:
     os.pwrite(fd, chunk, pos)
 
 
 @threaded_iterable_constrained
 def gen_without_hash(
-    stream: t.Iterable[bytes],
+        stream: t.Iterable[bytes],
 ) -> t.Generator[t.Tuple[None, bytes], None, None]:
     for data in stream:
         yield (None, data)
@@ -98,14 +98,14 @@ def gen_without_hash(
 
 @threaded_iterable_constrained
 def gen_with_hash(
-    stream: t.Iterable[bytes],
+        stream: t.Iterable[bytes],
 ) -> t.Generator[t.Tuple[str, bytes], None, None]:
     for data in stream:
         yield hashlib.sha256(data).hexdigest(), data
 
 
 def file_sender(
-    file_name: t.Union[str, Path], chunk_size: int = CHUNK_SIZE,
+        file_name: t.Union[str, Path], chunk_size: int = CHUNK_SIZE,
 ) -> t.Iterable[bytes]:
     with open(file_name, "rb") as fp:
         while True:
@@ -117,19 +117,18 @@ def file_sender(
 
 async_file_sender = threaded_iterable_constrained(file_sender)
 
-
 DataType = t.Union[bytes, str, t.AsyncIterable[bytes]]
 ParamsType = t.Optional[t.Mapping[str, str]]
 
 
 class S3Client:
     def __init__(
-        self, session: ClientSession, url: t.Union[URL, str],
-        secret_access_key: t.Optional[str] = None,
-        access_key_id: t.Optional[str] = None,
-        session_token: t.Optional[str] = None,
-        region: str = "",
-        credentials: t.Optional[AbstractCredentials] = None,
+            self, client: AsyncClient, url: t.Union[URL, str],
+            secret_access_key: t.Optional[str] = None,
+            access_key_id: t.Optional[str] = None,
+            session_token: t.Optional[str] = None,
+            region: str = "",
+            credentials: t.Optional[AbstractCredentials] = None,
     ):
         url = URL(url)
         if credentials is None:
@@ -146,23 +145,23 @@ class S3Client:
                 f"Credentials {credentials!r} is incomplete",
             )
 
-        self._url = URL(url).with_user(None).with_password(None)
-        self._session = session
+        self._url = url
+        self._client = client
         self._credentials = credentials
 
     @property
     def url(self) -> URL:
         return self._url
 
-    def request(
-        self, method: str, path: str,
-        headers: t.Optional[HeadersType] = None,
-        params: ParamsType = None,
-        data: t.Optional[DataType] = None,
-        data_length: t.Optional[int] = None,
-        content_sha256: t.Optional[str] = None,
-        **kwargs,
-    ) -> RequestContextManager:
+    async def request(
+            self, method: str, path: str,
+            headers: t.Optional[HeadersType] = None,
+            params: ParamsType = None,
+            data: t.Optional[DataType] = None,
+            data_length: t.Optional[int] = None,
+            content_sha256: t.Optional[str] = None,
+            **kwargs,
+    ) -> Response:
         if isinstance(data, bytes):
             data_length = len(data)
         elif isinstance(data, str):
@@ -171,89 +170,87 @@ class S3Client:
 
         headers = self._prepare_headers(headers)
         if data_length:
-            headers[hdrs.CONTENT_LENGTH] = str(data_length)
-        elif data is not None:
-            kwargs["chunked"] = True
+            headers[HEADERS.CONTENT_LENGTH] = str(data_length)
 
         if data is not None and content_sha256 is None:
             content_sha256 = UNSIGNED_PAYLOAD
 
-        url = (self._url / path.lstrip("/"))
-        url = url.with_path(quote(url.path), encoded=True).with_query(params)
+        url = (self._url.join(path))
+        url = url.copy_merge_params(params)
 
         headers = self._make_headers(headers)
-        headers.extend(
+        headers.update(
             self._credentials.signer.sign_with_headers(
                 method, str(url), headers=headers, content_hash=content_sha256,
             ),
         )
-        return self._session.request(
+        return await self._client.request(
             method, url, headers=headers, data=data, **kwargs,
         )
 
-    def get(self, object_name: str, **kwargs) -> RequestContextManager:
-        return self.request("GET", object_name, **kwargs)
+    async def get(self, object_name: str, **kwargs) -> Response:
+        return await self.request("GET", object_name, **kwargs)
 
-    def head(
-        self, object_name: str,
-        content_sha256=EMPTY_STR_HASH,
-        **kwargs,
-    ) -> RequestContextManager:
-        return self.request(
+    async def head(
+            self, object_name: str,
+            content_sha256=EMPTY_STR_HASH,
+            **kwargs,
+    ) -> Response:
+        return await self.request(
             "HEAD", object_name, content_sha256=content_sha256, **kwargs,
         )
 
-    def delete(
-        self, object_name: str,
-        content_sha256=EMPTY_STR_HASH,
-        **kwargs,
-    ) -> RequestContextManager:
-        return self.request(
+    async def delete(
+            self, object_name: str,
+            content_sha256=EMPTY_STR_HASH,
+            **kwargs,
+    ) -> Response:
+        return await self.request(
             "DELETE", object_name, content_sha256=content_sha256, **kwargs,
         )
 
     @staticmethod
-    def _make_headers(headers: t.Optional[HeadersType]) -> CIMultiDict:
-        headers = CIMultiDict(headers or {})
+    def _make_headers(headers: t.Optional[HeadersType]) -> dict:
+        headers = dict(headers or {})
         return headers
 
     def _prepare_headers(
-        self, headers: t.Optional[HeadersType],
-        file_path: str = "",
-    ) -> CIMultiDict:
+            self, headers: t.Optional[HeadersType],
+            file_path: str = "",
+    ) -> dict:
         headers = self._make_headers(headers)
 
-        if hdrs.CONTENT_TYPE not in headers:
+        if HEADERS.CONTENT_TYPE not in headers:
             content_type = guess_type(file_path)[0]
             if content_type is None:
                 content_type = "application/octet-stream"
 
-            headers[hdrs.CONTENT_TYPE] = content_type
+            headers[HEADERS.CONTENT_TYPE] = content_type
 
         return headers
 
-    def put(
-        self, object_name: str,
-        data: t.Union[bytes, str, t.AsyncIterable[bytes]], **kwargs,
-    ) -> RequestContextManager:
-        return self.request("PUT", object_name, data=data, **kwargs)
+    async def put(
+            self, object_name: str,
+            data: t.Union[bytes, str, t.AsyncIterable[bytes]], **kwargs,
+    ) -> Response:
+        return await self.request("PUT", object_name, data=data, **kwargs)
 
-    def post(
-        self, object_name: str,
-        data: t.Union[None, bytes, str, t.AsyncIterable[bytes]] = None,
-        **kwargs,
-    ) -> RequestContextManager:
-        return self.request("POST", object_name, data=data, **kwargs)
+    async def post(
+            self, object_name: str,
+            data: t.Union[None, bytes, str, t.AsyncIterable[bytes]] = None,
+            **kwargs,
+    ) -> Response:
+        return await self.request("POST", object_name, data=data, **kwargs)
 
-    def put_file(
-        self, object_name: t.Union[str, Path],
-        file_path: t.Union[str, Path],
-        *, headers: t.Optional[HeadersType] = None,
-        chunk_size: int = CHUNK_SIZE, content_sha256: t.Optional[str] = None,
-    ) -> RequestContextManager:
+    async def put_file(
+            self, object_name: t.Union[str, Path],
+            file_path: t.Union[str, Path],
+            *, headers: t.Optional[HeadersType] = None,
+            chunk_size: int = CHUNK_SIZE, content_sha256: t.Optional[str] = None,
+    ) -> Response:
 
         headers = self._prepare_headers(headers, str(file_path))
-        return self.put(
+        return await self.put(
             str(object_name),
             headers=headers,
             data=async_file_sender(
@@ -266,89 +263,89 @@ class S3Client:
 
     @asyncbackoff(
         None, None, 0,
-        max_tries=3, exceptions=(ClientError,),
+        max_tries=3, exceptions=(HTTPError,),
     )
     async def _create_multipart_upload(
-        self,
-        object_name: str,
-        headers: t.Optional[HeadersType] = None,
+            self,
+            object_name: str,
+            headers: t.Optional[HeadersType] = None,
     ) -> str:
-        async with self.post(
-            object_name,
-            headers=headers,
-            params={"uploads": 1},
-            content_sha256=EMPTY_STR_HASH,
-        ) as resp:
-            payload = await resp.read()
-            if resp.status != HTTPStatus.OK:
-                raise AwsUploadError(
-                    f"Wrong status code {resp.status} from s3 with message "
-                    f"{payload.decode()}.",
-                )
-            return parse_create_multipart_upload_id(payload)
+        resp = await self.post(
+                object_name,
+                headers=headers,
+                params={"uploads": 1},
+                content_sha256=EMPTY_STR_HASH,
+        )
+        payload = resp.read()
+        if resp.status_code != HTTPStatus.OK:
+            raise AwsUploadError(
+                f"Wrong status code {resp.status_code} from s3 with message "
+                f"{payload.decode()}.",
+            )
+        return parse_create_multipart_upload_id(payload)
 
     @asyncbackoff(
         None, None, 0,
-        max_tries=3, exceptions=(AwsUploadError, ClientError),
+        max_tries=3, exceptions=(AwsUploadError, HTTPError),
     )
     async def _complete_multipart_upload(
-        self,
-        upload_id: str,
-        object_name: str,
-        parts: t.List[t.Tuple[int, str]],
+            self,
+            upload_id: str,
+            object_name: str,
+            parts: t.List[t.Tuple[int, str]],
     ) -> None:
         complete_upload_request = create_complete_upload_request(parts)
-        async with self.post(
-            object_name,
-            headers={"Content-Type": "text/xml"},
-            params={"uploadId": upload_id},
-            data=complete_upload_request,
-            content_sha256=hashlib.sha256(complete_upload_request).hexdigest(),
-        ) as resp:
-            if resp.status != HTTPStatus.OK:
-                payload = await resp.text()
-                raise AwsUploadError(
-                    f"Wrong status code {resp.status} from s3 with message "
-                    f"{payload}.",
-                )
+        resp = await self.post(
+                object_name,
+                headers={"Content-Type": "text/xml"},
+                params={"uploadId": upload_id},
+                data=complete_upload_request,
+                content_sha256=hashlib.sha256(complete_upload_request).hexdigest(),
+        )
+        if resp.status_code != HTTPStatus.OK:
+            payload = resp.content
+            raise AwsUploadError(
+                f"Wrong status code {resp.status_code} from s3 with message "
+                f"{payload}.",
+            )
 
     async def _put_part(
-        self,
-        upload_id: str,
-        object_name: str,
-        part_no: int,
-        data: bytes,
-        content_sha256: str,
-        **kwargs,
-    ) -> str:
-        async with self.put(
-            object_name,
-            params={"partNumber": part_no, "uploadId": upload_id},
-            data=data,
-            content_sha256=content_sha256,
+            self,
+            upload_id: str,
+            object_name: str,
+            part_no: int,
+            data: bytes,
+            content_sha256: str,
             **kwargs,
-        ) as resp:
-            payload = await resp.text()
-            if resp.status != HTTPStatus.OK:
-                raise AwsUploadError(
-                    f"Wrong status code {resp.status} from s3 with message "
-                    f"{payload}.",
-                )
-            return resp.headers["Etag"].strip('"')
+    ) -> str:
+        resp = await self.put(
+                object_name,
+                params={"partNumber": part_no, "uploadId": upload_id},
+                data=data,
+                content_sha256=content_sha256,
+                **kwargs,
+        )
+        payload = resp.content
+        if resp.status_code != HTTPStatus.OK:
+            raise AwsUploadError(
+                f"Wrong status code {resp.status_code} from s3 with message "
+                f"{payload}.",
+            )
+        return resp.headers["Etag"].strip('"')
 
     async def _part_uploader(
-        self,
-        upload_id: str,
-        object_name: str,
-        parts_queue: asyncio.Queue,
-        results_queue: deque,
-        part_upload_tries: int,
-        **kwargs,
+            self,
+            upload_id: str,
+            object_name: str,
+            parts_queue: asyncio.Queue,
+            results_queue: deque,
+            part_upload_tries: int,
+            **kwargs,
     ) -> None:
         backoff = asyncbackoff(
             None, None,
             max_tries=part_upload_tries,
-            exceptions=(ClientError,),
+            exceptions=(HTTPError,),
         )
         while True:
             msg = await parts_queue.get()
@@ -369,17 +366,17 @@ class S3Client:
             results_queue.append((part_no, etag))
 
     async def put_file_multipart(
-        self,
-        object_name: t.Union[str, Path],
-        file_path: t.Union[str, Path],
-        *,
-        headers: t.Optional[HeadersType] = None,
-        part_size: int = PART_SIZE,
-        workers_count: int = 1,
-        max_size: t.Optional[int] = None,
-        part_upload_tries: int = 3,
-        calculate_content_sha256: bool = True,
-        **kwargs,
+            self,
+            object_name: t.Union[str, Path],
+            file_path: t.Union[str, Path],
+            *,
+            headers: t.Optional[HeadersType] = None,
+            part_size: int = PART_SIZE,
+            workers_count: int = 1,
+            max_size: t.Optional[int] = None,
+            part_upload_tries: int = 3,
+            calculate_content_sha256: bool = True,
+            **kwargs,
     ) -> None:
         """
         Upload data from a file with multipart upload
@@ -414,7 +411,7 @@ class S3Client:
         )
 
     async def _parts_generator(
-        self, gen, workers_count: int, parts_queue: asyncio.Queue,
+            self, gen, workers_count: int, parts_queue: asyncio.Queue,
     ) -> int:
         part_no = 1
         async with gen:
@@ -431,16 +428,16 @@ class S3Client:
         return part_no
 
     async def put_multipart(
-        self,
-        object_name: t.Union[str, Path],
-        data: t.Iterable[bytes],
-        *,
-        headers: t.Optional[HeadersType] = None,
-        workers_count: int = 1,
-        max_size: t.Optional[int] = None,
-        part_upload_tries: int = 3,
-        calculate_content_sha256: bool = True,
-        **kwargs,
+            self,
+            object_name: t.Union[str, Path],
+            data: t.Iterable[bytes],
+            *,
+            headers: t.Optional[HeadersType] = None,
+            workers_count: int = 1,
+            max_size: t.Optional[int] = None,
+            part_upload_tries: int = 3,
+            calculate_content_sha256: bool = True,
+            **kwargs,
     ) -> None:
         """
         Send data from iterable with multipart upload
@@ -514,18 +511,18 @@ class S3Client:
         )
 
     async def _download_range(
-        self,
-        object_name: str,
-        writer: t.Callable[[bytes, int, int], t.Coroutine],
-        *,
-        etag: str,
-        pos: int,
-        range_start: int,
-        req_range_start: int,
-        req_range_end: int,
-        buffer_size: int,
-        headers: t.Optional[HeadersType] = None,
-        **kwargs,
+            self,
+            object_name: str,
+            writer: t.Callable[[bytes, int, int], t.Coroutine],
+            *,
+            etag: str,
+            pos: int,
+            range_start: int,
+            req_range_start: int,
+            req_range_end: int,
+            buffer_size: int,
+            headers: t.Optional[HeadersType] = None,
+            **kwargs,
     ) -> None:
         """
         Downloading range [req_range_start:req_range_end] to `file`
@@ -543,32 +540,31 @@ class S3Client:
         headers["If-Match"] = etag
 
         pos = req_range_start
-        async with self.get(object_name, headers=headers, **kwargs) as resp:
-            if resp.status not in (HTTPStatus.PARTIAL_CONTENT, HTTPStatus.OK):
-                raise AwsDownloadError(
-                    f"Got wrong status code {resp.status} on range download "
-                    f"of {object_name}",
-                )
-            while True:
-                chunk = await resp.content.read(buffer_size)
-                if not chunk:
-                    break
-                await writer(chunk, range_start, pos)
-                pos += len(chunk)
+        resp = await self.get(object_name, headers=headers, **kwargs)
+        if resp.status_code not in (HTTPStatus.PARTIAL_CONTENT, HTTPStatus.OK):
+            raise AwsDownloadError(
+                f"Got wrong status code {resp.status_code} on range download "
+                f"of {object_name}",
+            )
+        async for chunk in resp.aiter_bytes(buffer_size):
+            if not chunk:
+                break
+            await writer(chunk, range_start, pos)
+            pos += len(chunk)
 
     async def _download_worker(
-        self,
-        object_name: str,
-        writer: t.Callable[[bytes, int, int], t.Coroutine],
-        *,
-        etag: str,
-        range_step: int,
-        range_start: int,
-        range_end: int,
-        buffer_size: int,
-        range_get_tries: int = 3,
-        headers: t.Optional[HeadersType] = None,
-        **kwargs,
+            self,
+            object_name: str,
+            writer: t.Callable[[bytes, int, int], t.Coroutine],
+            *,
+            etag: str,
+            range_step: int,
+            range_start: int,
+            range_end: int,
+            buffer_size: int,
+            range_get_tries: int = 3,
+            headers: t.Optional[HeadersType] = None,
+            **kwargs,
     ) -> None:
         """
         Downloads data in range `[range_start, range_end)`
@@ -583,7 +579,7 @@ class S3Client:
         backoff = asyncbackoff(
             None, None,
             max_tries=range_get_tries,
-            exceptions=(ClientError,),
+            exceptions=(HTTPError,),
         )
         req_range_end = range_start
         for req_range_start in range(range_start, range_end, range_step):
@@ -604,16 +600,16 @@ class S3Client:
             )
 
     async def get_file_parallel(
-        self,
-        object_name: t.Union[str, Path],
-        file_path: t.Union[str, Path],
-        *,
-        headers: t.Optional[HeadersType] = None,
-        range_step: int = PART_SIZE,
-        workers_count: int = 1,
-        range_get_tries: int = 3,
-        buffer_size: int = PAGESIZE * 32,
-        **kwargs,
+            self,
+            object_name: t.Union[str, Path],
+            file_path: t.Union[str, Path],
+            *,
+            headers: t.Optional[HeadersType] = None,
+            range_step: int = PART_SIZE,
+            workers_count: int = 1,
+            range_get_tries: int = 3,
+            buffer_size: int = PAGESIZE * 32,
+            **kwargs,
     ) -> None:
         """
         Download object in parallel with requests with Range.
@@ -629,20 +625,20 @@ class S3Client:
         buffer_size: size of a buffer for on the fly data
         """
         file_path = Path(file_path)
-        async with self.head(str(object_name), headers=headers) as resp:
-            if resp.status != HTTPStatus.OK:
-                raise AwsDownloadError(
-                    f"Got response for HEAD request for {object_name}"
-                    f"of a wrong status {resp.status}",
-                )
-            etag = resp.headers["Etag"]
-            file_size = int(resp.headers["Content-Length"])
-            log.debug(
-                "Object's %s etag is %s and size is %d",
-                object_name,
-                etag,
-                file_size,
+        resp = await self.head(str(object_name), headers=headers)
+        if resp.status_code != HTTPStatus.OK:
+            raise AwsDownloadError(
+                f"Got response for HEAD request for {object_name}"
+                f"of a wrong status {resp.status_code}",
             )
+        etag = resp.headers["Etag"]
+        file_size = int(resp.headers["Content-Length"])
+        log.debug(
+            "Object's %s etag is %s and size is %d",
+            object_name,
+            etag,
+            file_size,
+        )
 
         workers = []
         files: t.List[t.IO[bytes]] = []
@@ -697,14 +693,14 @@ class S3Client:
             raise
 
     async def list_objects_v2(
-        self,
-        object_name: t.Union[str, Path] = "/",
-        *,
-        bucket: t.Optional[str] = None,
-        prefix: t.Optional[t.Union[str, Path]] = None,
-        delimiter: t.Optional[str] = None,
-        max_keys: t.Optional[int] = None,
-        start_after: t.Optional[str] = None,
+            self,
+            object_name: t.Union[str, Path] = "/",
+            *,
+            bucket: t.Optional[str] = None,
+            prefix: t.Optional[t.Union[str, Path]] = None,
+            delimiter: t.Optional[str] = None,
+            max_keys: t.Optional[int] = None,
+            start_after: t.Optional[str] = None,
     ) -> t.AsyncIterator[t.List[AwsObjectMeta]]:
         """
         List objects in bucket.
@@ -743,17 +739,17 @@ class S3Client:
             object_name = f"/{bucket}"
 
         while True:
-            async with self.get(str(object_name), params=params) as resp:
-                if resp.status != HTTPStatus.OK:
-                    raise AwsDownloadError(
-                        f"Got response with wrong status for GET request for "
-                        f"{object_name} with prefix '{prefix}'",
-                    )
-                payload = await resp.read()
-                metadata, continuation_token = parse_list_objects(payload)
-                if not metadata:
-                    break
-                yield metadata
-                if not continuation_token:
-                    break
-                params["continuation-token"] = continuation_token
+            resp = await self.get(str(object_name), params=params)
+            if resp.status_code != HTTPStatus.OK:
+                raise AwsDownloadError(
+                    f"Got response with wrong status for GET request for "
+                    f"{object_name} with prefix '{prefix}'",
+                )
+            payload = resp.content
+            metadata, continuation_token = parse_list_objects(payload)
+            if not metadata:
+                break
+            yield metadata
+            if not continuation_token:
+                break
+            params["continuation-token"] = continuation_token

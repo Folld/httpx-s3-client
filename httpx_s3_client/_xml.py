@@ -3,7 +3,6 @@ from sys import intern
 from typing import List, NamedTuple, Optional, Tuple
 from xml.etree import ElementTree as ET
 
-
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 

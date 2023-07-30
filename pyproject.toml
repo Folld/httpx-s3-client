@@ -1,17 +1,18 @@
 [tool.poetry]
-name = "aiohttp-s3-client"
+name = "httpx-s3-client"
 # Dummy version which will be rewritten with poem-plugins
-version = "0.8.16"
+version = "0.0.1"
 description = "The simple module for putting and getting object from Amazon S3 compatible endpoints"
 authors = [
+    "Vladimir Morugin <vamorugin@gmail.com>",
     "Dmitry Orlov <me@mosquito.su>",
     "Yuri Shikanov <dizballanze@gmail.com>",
-    "Alexander Vasin <hi@alvass.in>"
+    "Alexander Vasin <hi@alvass.in>",
 ]
 license = "Apache Software License"
 readme = "README.md"
-homepage = "https://github.com/aiokitchen/aiohttp-s3-client"
-packages = [{include = "aiohttp_s3_client"}]
+homepage = "https://github.com/Folld/httpx-s3-client"
+packages = [{include = "httpx_s3_client"}]
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: Apache Software License",
@@ -35,16 +36,16 @@ classifiers = [
 ]
 
 [tool.poetry.urls]
-"Source" = "https://github.com/aiokitchen/aiohttp-s3-client"
-"Tracker" = "https://github.com/aiokitchen/aiohttp-s3-client/issues"
+"Source" = "https://github.com/Folld/httpx-s3-client"
+"Tracker" = "https://github.com/Folld/httpx-s3-client/issues"
 
 [tool.poetry.dependencies]
-aiohttp = "^3.8"
 aiomisc = "^17"
 aws-request-signer = "1.2.0"
 cached-property = [{ version = '^1.5.2', python = "< 3.8" }]
 typing_extensions = [{ version = '*', python = "< 3.10" }]
 python = "^3.7"
+httpx = "^0.24.1"
 
 
 [tool.poetry.group.dev.dependencies]
@@ -57,7 +58,7 @@ pytest = "^7.2.1"
 pytest-cov = "^4.0.0"
 pytest-timeout = "^2.1.0"
 tox = "^4.4.6"
-pytest-aiohttp = "^1.0.4"
+pytest-httpx = "^0.22.0"
 
 [build-system]
 requires = ["poetry-core"]
@@ -76,7 +77,7 @@ no_implicit_reexport = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_unused_configs = true
-files = ["aiohttp_s3_client", "tests"]
+files = ["httpx_s3_client", "tests"]
 
 [tool.pylama]
 max_line_length = 80
