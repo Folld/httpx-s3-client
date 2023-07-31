@@ -245,7 +245,6 @@ class MetadataCredentials(AbstractCredentials):
                 host=self.METADATA_ADDRESS.rstrip('/'),
                 port=self.METADATA_PORT,
             ),
-            headers={},
         )
         self.service = service
         self.refresh_lock: asyncio.Lock = asyncio.Lock()

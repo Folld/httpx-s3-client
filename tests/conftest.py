@@ -9,7 +9,7 @@ from httpx_s3_client import S3Client
 
 @pytest.fixture
 async def s3_client(s3_url: URL, s3_access_key_id: str, s3_secret_access_key: str):
-    client = AsyncClient()
+    client = AsyncClient(timeout=30)
     yield S3Client(client=client, url=s3_url, region="us-east-1", access_key_id=s3_access_key_id,
                    secret_access_key=s3_secret_access_key)
 
