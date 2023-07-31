@@ -1,14 +1,14 @@
 httpx-s3-client
 ================
 
-[![Coverage Status](https://coveralls.io/repos/github/vmorugin/httpx-s3-client/badge.svg?branch=master)](https://coveralls.io/github/vmorugin/httpx-s3-client?branch=master)
+[![Coverage Status](https://coveralls.io/repos/github/vmorugin/httpx-s3-client/badge.svg?branch=master)](https://coveralls.io/github/vmorugin/httpx-s3-client?branch=master) [![PyPI - License](https://img.shields.io/pypi/l/httpx-s3-client)](https://pypi.org/project/httpx-s3-client) [![PyPI](https://img.shields.io/pypi/v/httpx-s3-client)](https://pypi.org/project/httpx-s3-client) [![PyPI](https://img.shields.io/pypi/pyversions/httpx-s3-client)](https://pypi.org/project/httpx-s3-client) [![Mypy](http://www.mypy-lang.org/static/mypy_badge.svg)]()
 
 The simple module for putting and getting object from Amazon S3 compatible endpoints.
 
 ## Installation
 
 ```bash
-pip install aiohttp-s3-client
+pip install httpx-s3-client
 ```
 
 ## Usage
