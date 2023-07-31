@@ -16,7 +16,7 @@ async def s3_client(s3_url: URL, s3_access_key_id: str, s3_secret_access_key: st
 
 @pytest.fixture
 def s3_url() -> URL:
-    return URL(os.getenv("S3_URL", "http://user:hackme@localhost:8000/"))
+    return URL(os.getenv("S3_URL", "http://user:hackme@localhost:9090/"))
 
 
 @pytest.fixture

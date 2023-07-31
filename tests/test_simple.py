@@ -90,14 +90,13 @@ async def test_list_objects_v2(s3_client: S3Client, s3_read, tmp_path, s3_bucket
             assert result[0].size == len(data)
 
 
-@pytest.mark.xfail
 async def test_url_path_with_colon(s3_client: S3Client, s3_read, s3_bucket_name):
     data = b"hello, world"
-    key = "/some-path:with-colon.txt"
+    key = f"{s3_bucket_name}/some-path:with-colon.txt"
     resp = await s3_client.put(key, data)
     assert resp.status_code == HTTPStatus.OK
 
-    assert (await s3_read(key)) == data
+    assert (await s3_read(key)).content == data
 
 
 @pytest.mark.parametrize("object_name", ("{bucket}/test", "/{bucket}/test"))
