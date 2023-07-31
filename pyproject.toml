@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "httpx-s3-client"
 # Dummy version which will be rewritten with poem-plugins
-version = "0.0.1"
+version = "0.0.3"
 description = "The simple module for putting and getting object from Amazon S3 compatible endpoints"
 authors = [
     "Vladimir Morugin <vamorugin@gmail.com>",
