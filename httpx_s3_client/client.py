@@ -17,7 +17,7 @@ from tempfile import NamedTemporaryFile
 
 from aiomisc import asyncbackoff, threaded, threaded_iterable
 from aws_request_signer import UNSIGNED_PAYLOAD
-from httpx import URL, HTTPError, AsyncClient, Response
+from httpx import URL, HTTPError, AsyncClient, Response, QueryParams
 
 from httpx_s3_client._xml import (
     AwsObjectMeta, create_complete_upload_request,
@@ -38,6 +38,18 @@ EMPTY_STR_HASH = hashlib.sha256(b"").hexdigest()
 PART_SIZE = 5 * 1024 * 1024
 HeadersType = t.Union[t.Dict]
 threaded_iterable_constrained = threaded_iterable(max_size=2)
+
+DataType = t.Optional[t.Mapping[str, t.Any]]
+RequestContent = t.Optional[t.Union[str, bytes, t.Iterable[bytes], t.AsyncIterable[bytes]]]
+PrimitiveData = t.Optional[t.Union[str, int, float, bool]]
+QueryParamTypes = t.Union[
+    QueryParams,
+    t.Mapping[str, t.Union[PrimitiveData, t.Sequence[PrimitiveData]]],
+    t.List[t.Tuple[str, PrimitiveData]],
+    t.Tuple[t.Tuple[str, PrimitiveData], ...],
+    str,
+    bytes,
+]
 
 
 @dataclass
@@ -117,9 +129,6 @@ def file_sender(
 
 async_file_sender = threaded_iterable_constrained(file_sender)
 
-DataType = t.Union[bytes, str, t.AsyncIterable[bytes]]
-ParamsType = t.Optional[t.Mapping[str, str]]
-
 
 class S3Client:
     def __init__(
@@ -156,27 +165,19 @@ class S3Client:
     async def request(
         self, method: str, path: str,
         headers: t.Optional[HeadersType] = None,
-        params: ParamsType = None,
-        data: t.Optional[DataType] = None,
-        data_length: t.Optional[int] = None,
+        params: t.Optional[QueryParams] = None,
+        content: t.Optional[RequestContent] = None,
         content_sha256: t.Optional[str] = None,
         **kwargs,
     ) -> Response:
-        if isinstance(data, bytes):
-            data_length = len(data)
-        elif isinstance(data, str):
-            data = data.encode()
-            data_length = len(data)
-
         headers = self._prepare_headers(headers)
-        if data_length:
-            headers[HEADERS.CONTENT_LENGTH] = str(data_length)
 
-        if data is not None and content_sha256 is None:
+        if content is not None and content_sha256 is None:
             content_sha256 = UNSIGNED_PAYLOAD
 
         url = (self._url.join(path))
-        url = url.copy_merge_params(params)
+        if params:
+            url = url.copy_merge_params(params)
 
         headers = self._make_headers(headers)
         headers.update(
@@ -185,7 +186,7 @@ class S3Client:
             ),
         )
         return await self._client.request(
-            method, url, headers=headers, data=data, **kwargs,
+            method, url, headers=headers, content=content, **kwargs,
         )
 
     async def get(self, object_name: str, **kwargs) -> Response:
@@ -231,16 +232,17 @@ class S3Client:
 
     async def put(
         self, object_name: str,
-        data: t.Union[bytes, str, t.AsyncIterable[bytes]], **kwargs,
+        content: RequestContent,
+        **kwargs,
     ) -> Response:
-        return await self.request("PUT", object_name, data=data, **kwargs)
+        return await self.request("PUT", object_name, content=content, **kwargs)
 
     async def post(
         self, object_name: str,
-        data: t.Union[None, bytes, str, t.AsyncIterable[bytes]] = None,
+        content: RequestContent = None,
         **kwargs,
     ) -> Response:
-        return await self.request("POST", object_name, data=data, **kwargs)
+        return await self.request("POST", object_name, content=content, **kwargs)
 
     async def put_file(
         self, object_name: t.Union[str, Path],
@@ -253,11 +255,10 @@ class S3Client:
         return await self.put(
             str(object_name),
             headers=headers,
-            data=async_file_sender(
+            content=async_file_sender(
                 file_path,
                 chunk_size=chunk_size,
             ),
-            data_length=os.stat(file_path).st_size,
             content_sha256=content_sha256,
         )
 
@@ -299,14 +300,14 @@ class S3Client:
             object_name,
             headers={"Content-Type": "text/xml"},
             params={"uploadId": upload_id},
-            data=complete_upload_request,
+            content=complete_upload_request,
             content_sha256=hashlib.sha256(complete_upload_request).hexdigest(),
         )
         if resp.status_code != HTTPStatus.OK:
             payload = resp.content
             raise AwsUploadError(
                 f"Wrong status code {resp.status_code} from s3 with message "
-                f"{payload}.",
+                f"{payload!r}.",
             )
 
     async def _put_part(
@@ -314,14 +315,14 @@ class S3Client:
         upload_id: str,
         object_name: str,
         part_no: int,
-        data: bytes,
+        content: RequestContent,
         content_sha256: str,
         **kwargs,
     ) -> str:
         resp = await self.put(
             object_name,
             params={"partNumber": part_no, "uploadId": upload_id},
-            data=data,
+            content=content,
             content_sha256=content_sha256,
             **kwargs,
         )
@@ -329,7 +330,7 @@ class S3Client:
         if resp.status_code != HTTPStatus.OK:
             raise AwsUploadError(
                 f"Wrong status code {resp.status_code} from s3 with message "
-                f"{payload}.",
+                f"{payload!r}.",
             )
         return resp.headers["Etag"].strip('"')
 
@@ -356,7 +357,7 @@ class S3Client:
                 upload_id=upload_id,
                 object_name=object_name,
                 part_no=part_no,
-                data=part,
+                content=part,
                 content_sha256=part_hash,
                 **kwargs,
             )
@@ -430,7 +431,7 @@ class S3Client:
     async def put_multipart(
         self,
         object_name: t.Union[str, Path],
-        data: t.Iterable[bytes],
+        content: t.Iterable[bytes],
         *,
         headers: t.Optional[HeadersType] = None,
         workers_count: int = 1,
@@ -481,9 +482,9 @@ class S3Client:
         ]
 
         if calculate_content_sha256:
-            gen = gen_with_hash(data)
+            gen = gen_with_hash(content)
         else:
-            gen = gen_without_hash(data)
+            gen = gen_without_hash(content)
 
         parts_generator = asyncio.create_task(
             self._parts_generator(gen, workers_count, parts_queue),

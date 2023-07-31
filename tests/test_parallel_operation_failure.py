@@ -40,7 +40,7 @@ def s3_url(s3_mock_url):
     return s3_mock_url
 
 
-CREATE_MP_UPLOAD_RESPONSE = """\
+CREATE_MP_UPLOAD_RESPONSE = b"""\
 <?xml version="1.0" encoding="UTF-8"?>
 <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
     <UploadId>EXAMPLEJZ6e0YupT2h66iePQCc9IEbYbDUy4RTpMeoSMLPRp8Z5o1u8feSRonpvnWsKKG35tI2LB9VDPiCgTy.Gq2VxQLYjrue4Nq.NBdqI-</UploadId>
