@@ -232,8 +232,8 @@ class MetadataSecurityCredentials(TypedDict, total=False):
 
 
 class MetadataCredentials(AbstractCredentials):
-    METADATA_ADDRESS = "169.254.169.254"
-    METADATA_PORT = 80
+    METADATA_ADDRESS: str = "169.254.169.254"
+    METADATA_PORT: int = 80
 
     def __bool__(self) -> bool:
         return self.is_started.is_set()
@@ -242,7 +242,7 @@ class MetadataCredentials(AbstractCredentials):
         self.session = AsyncClient(
             base_url=URL(
                 scheme="http",
-                host=str(self.METADATA_ADDRESS).rstrip('/'),
+                host=self.METADATA_ADDRESS.rstrip('/'),
                 port=self.METADATA_PORT,
             ),
             headers={},
@@ -262,8 +262,8 @@ class MetadataCredentials(AbstractCredentials):
                     delta = expires_at - datetime.datetime.utcnow()
                     sleep_time = math.floor(delta.total_seconds() / 2)
                     self.is_started.set()
-                except Exception:
-                    log.exception("Failed to update credentials")
+                except Exception as ex:
+                    log.exception("Failed to update credentials", exc_info=ex)
                     sleep_time = 60
             await asyncio.sleep(sleep_time)
 
