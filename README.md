@@ -284,7 +284,7 @@ import httpx
 from httpx_s3_client import S3Client
 
 
-client = S3Client(url="http://your-s3-host", httpx=httpx.AsyncClient())
+client = S3Client(url="http://your-s3-host", client=httpx.AsyncClient())
 
 await client.get_file_parallel(
     "dump/bigfile.csv",
